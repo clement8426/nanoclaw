@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import fs from 'fs';
 import path from 'path';
 
@@ -5,10 +6,17 @@ import { CronExpressionParser } from 'cron-parser';
 
 import { DATA_DIR, IPC_POLL_INTERVAL, TIMEZONE } from './config.js';
 import { AvailableGroup } from './container-runner.js';
-import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
+import {
+  createTask,
+  deleteTask,
+  getTaskById,
+  getWorkersForOrchestrator,
+  saveAgentMessage,
+  updateTask,
+} from './db.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
-import { RegisteredGroup } from './types.js';
+import { AgentMessage, RegisteredGroup } from './types.js';
 
 export interface IpcDeps {
   sendMessage: (jid: string, text: string) => Promise<void>;
@@ -22,6 +30,11 @@ export interface IpcDeps {
     availableGroups: AvailableGroup[],
     registeredJids: Set<string>,
   ) => void;
+  // Optional until modification 5 wires it in index.ts
+  queue?: {
+    sendMessage: (groupJid: string, text: string) => boolean;
+    enqueueMessageCheck: (groupJid: string) => void;
+  };
 }
 
 let ipcWatcherRunning = false;
@@ -171,6 +184,14 @@ export async function processTaskIpc(
     trigger?: string;
     requiresTrigger?: boolean;
     containerConfig?: RegisteredGroup['containerConfig'];
+    // For route_to_agent / broadcast_to_agents
+    targetGroupJid?: string;
+    message?: string;
+    messageType?: AgentMessage['type'];
+    context?: string;
+    priority?: AgentMessage['priority'];
+    artifacts?: string[];
+    requiresHuman?: boolean;
   },
   sourceGroup: string, // Verified identity from IPC directory
   isMain: boolean, // Verified from directory path
@@ -448,6 +469,92 @@ export async function processTaskIpc(
         );
       }
       break;
+
+    case 'route_to_agent': {
+      const isOrchestrator =
+        registeredGroups[sourceGroup]?.role === 'orchestrator';
+
+      if (!isMain && !isOrchestrator) {
+        logger.warn(
+          { sourceGroup, target: data.targetGroupJid },
+          'route_to_agent rejected: source is not main or orchestrator',
+        );
+        break;
+      }
+
+      const targetFolder = data.targetGroupJid;
+
+      if (!targetFolder || !registeredGroups[targetFolder]) {
+        logger.warn(
+          { targetFolder },
+          'route_to_agent rejected: target agent not found',
+        );
+        break;
+      }
+
+      const msg: AgentMessage = {
+        id: randomUUID(),
+        from: sourceGroup,
+        to: targetFolder,
+        type: data.messageType ?? 'task',
+        content: data.message ?? '',
+        context: data.context,
+        task_id: data.taskId,
+        priority: data.priority ?? 'normal',
+        artifacts: data.artifacts,
+        requires_human: data.requiresHuman ?? false,
+        timestamp: new Date().toISOString(),
+      };
+
+      saveAgentMessage(msg);
+
+      if (deps.queue) {
+        deps.queue.sendMessage(targetFolder, data.message ?? '') ||
+          deps.queue.enqueueMessageCheck(targetFolder);
+      }
+
+      logger.info(
+        { from: sourceGroup, to: targetFolder, type: msg.type },
+        'Message routed between agents',
+      );
+      break;
+    }
+
+    case 'broadcast_to_agents': {
+      const workers = getWorkersForOrchestrator(sourceGroup);
+
+      if (!isMain && registeredGroups[sourceGroup]?.role !== 'orchestrator') {
+        logger.warn(
+          { sourceGroup },
+          'broadcast_to_agents rejected: not orchestrator',
+        );
+        break;
+      }
+
+      for (const workerFolder of workers) {
+        const msg: AgentMessage = {
+          id: randomUUID(),
+          from: sourceGroup,
+          to: workerFolder,
+          type: 'task',
+          content: data.message ?? '',
+          task_id: data.taskId,
+          priority: data.priority ?? 'normal',
+          timestamp: new Date().toISOString(),
+        };
+        saveAgentMessage(msg);
+        if (deps.queue) {
+          deps.queue.sendMessage(workerFolder, data.message ?? '') ||
+            deps.queue.enqueueMessageCheck(workerFolder);
+        }
+      }
+
+      logger.info(
+        { from: sourceGroup, workers },
+        'Message broadcast to all workers',
+      );
+      break;
+    }
 
     default:
       logger.warn({ type: data.type }, 'Unknown IPC task type');

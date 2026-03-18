@@ -40,6 +40,9 @@ export interface RegisteredGroup {
   containerConfig?: ContainerConfig;
   requiresTrigger?: boolean; // Default: true for groups, false for solo chats
   isMain?: boolean; // True for the main control group (no trigger, elevated privileges)
+  role?: 'orchestrator' | 'worker' | 'specialist';
+  parentFolder?: string;
+  childFolders?: string[];
 }
 
 export interface NewMessage {
@@ -105,3 +108,26 @@ export type OnChatMetadata = (
   channel?: string,
   isGroup?: boolean,
 ) => void;
+
+export interface AgentMessage {
+  id: string;
+  from: string;
+  to: string;
+  type:
+    | 'task'
+    | 'result'
+    | 'question'
+    | 'deposit'
+    | 'ticket_created'
+    | 'ticket_update'
+    | 'escalate'
+    | 'report'
+    | 'recruit';
+  content: string;
+  context?: string;
+  task_id?: string;
+  priority: 'low' | 'normal' | 'high' | 'urgent';
+  artifacts?: string[];
+  requires_human?: boolean;
+  timestamp: string;
+}

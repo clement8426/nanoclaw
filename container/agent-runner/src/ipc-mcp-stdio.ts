@@ -333,6 +333,103 @@ Use available_groups.json to find the JID for a group. The folder name must be c
   },
 );
 
+server.tool(
+  'route_to_agent',
+  'Send a message or task to another agent in the hierarchy. ' +
+    'Use this to delegate work to a worker or report to orchestrator.',
+  {
+    targetGroupJid: z
+      .string()
+      .describe('The folder name of the target agent (e.g. agent-dev, agent-web)'),
+    message: z.string().describe('The message or task to send to the target agent'),
+    messageType: z
+      .enum([
+        'task',
+        'result',
+        'question',
+        'deposit',
+        'ticket_created',
+        'ticket_update',
+        'escalate',
+        'report',
+        'recruit',
+      ])
+      .optional()
+      .describe('Type of message. Defaults to task'),
+    context: z.string().optional().describe('Additional context the target agent needs'),
+    taskId: z.string().optional().describe('Task ID to associate this message with'),
+    priority: z
+      .enum(['low', 'normal', 'high', 'urgent'])
+      .optional()
+      .describe('Priority level. Defaults to normal'),
+    artifacts: z
+      .array(z.string())
+      .optional()
+      .describe('File paths deposited in workspace for the target agent'),
+    requiresHuman: z
+      .boolean()
+      .optional()
+      .describe('Set true if this message requires human intervention'),
+  },
+  async ({ targetGroupJid, message, messageType, context, taskId, priority, artifacts, requiresHuman }) => {
+    writeIpcFile(TASKS_DIR, {
+      type: 'route_to_agent',
+      targetGroupJid,
+      message,
+      messageType: messageType ?? 'task',
+      context,
+      taskId,
+      priority: priority ?? 'normal',
+      artifacts,
+      requiresHuman: requiresHuman ?? false,
+      sourceGroupFolder: groupFolder,
+      timestamp: new Date().toISOString(),
+    });
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text:
+            `Message routed to agent ${targetGroupJid} ` +
+            `(type: ${messageType ?? 'task'}, ` +
+            `priority: ${priority ?? 'normal'})`,
+        },
+      ],
+    };
+  },
+);
+
+server.tool(
+  'broadcast_to_agents',
+  'Send the same message to all worker agents. Only available to orchestrator agents.',
+  {
+    message: z.string().describe('The message to broadcast to all workers'),
+    taskId: z.string().optional().describe('Task ID to associate with this broadcast'),
+    priority: z
+      .enum(['low', 'normal', 'high', 'urgent'])
+      .optional()
+      .describe('Priority level. Defaults to normal'),
+  },
+  async ({ message, taskId, priority }) => {
+    writeIpcFile(TASKS_DIR, {
+      type: 'broadcast_to_agents',
+      message,
+      taskId,
+      priority: priority ?? 'normal',
+      sourceGroupFolder: groupFolder,
+      timestamp: new Date().toISOString(),
+    });
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: `Message broadcast to all workers (priority: ${priority ?? 'normal'})`,
+        },
+      ],
+    };
+  },
+);
+
 // Start the stdio transport
 const transport = new StdioServerTransport();
 await server.connect(transport);

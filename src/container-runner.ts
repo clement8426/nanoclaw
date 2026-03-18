@@ -41,6 +41,9 @@ export interface ContainerInput {
   isMain: boolean;
   isScheduledTask?: boolean;
   assistantName?: string;
+  agentRole?: 'orchestrator' | 'worker' | 'specialist';
+  parentGroupJid?: string;
+  childFolders?: string[];
 }
 
 export interface ContainerOutput {

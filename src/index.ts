@@ -305,16 +305,50 @@ async function runAgent(
       }
     : undefined;
 
+  const roleContext = (() => {
+    if (group.role === 'orchestrator') {
+      const workers = group.childFolders ?? [];
+      return workers.length > 0
+        ? `\n\n[SYSTEM: You are an ORCHESTRATOR agent. ` +
+            `Your available workers: ${workers.join(', ')}. ` +
+            `Use route_to_agent to delegate tasks to them. ` +
+            `Use broadcast_to_agents to message all workers at once.]`
+        : `\n\n[SYSTEM: You are an ORCHESTRATOR agent ` +
+            `with no workers assigned yet. ` +
+            `You can recruit new agents if needed.]`;
+    }
+    if (group.role === 'worker' && group.parentFolder) {
+      return (
+        `\n\n[SYSTEM: You are a WORKER agent. ` +
+        `Your orchestrator is: ${group.parentFolder}. ` +
+        `Report results back using route_to_agent ` +
+        `with type 'result'.]`
+      );
+    }
+    if (group.role === 'specialist') {
+      return (
+        `\n\n[SYSTEM: You are a SPECIALIST agent. ` +
+        `Complete your assigned task and report back ` +
+        `to whoever assigned you using route_to_agent ` +
+        `with type 'result'.]`
+      );
+    }
+    return '';
+  })();
+
   try {
     const output = await runContainerAgent(
       group,
       {
-        prompt,
+        prompt: prompt + roleContext,
         sessionId,
         groupFolder: group.folder,
         chatJid,
         isMain,
         assistantName: ASSISTANT_NAME,
+        agentRole: group.role ?? 'worker',
+        parentGroupJid: group.parentFolder,
+        childFolders: group.childFolders,
       },
       (proc, containerName) =>
         queue.registerProcess(chatJid, proc, containerName, group.folder),
@@ -575,6 +609,12 @@ async function main(): Promise<void> {
     getAvailableGroups,
     writeGroupsSnapshot: (gf, im, ag, rj) =>
       writeGroupsSnapshot(gf, im, ag, rj),
+    queue: {
+      sendMessage: (groupJid: string, text: string) =>
+        queue.sendMessage(groupJid, text),
+      enqueueMessageCheck: (groupJid: string) =>
+        queue.enqueueMessageCheck(groupJid),
+    },
   });
   queue.setProcessMessagesFn(processGroupMessages);
   recoverPendingMessages();

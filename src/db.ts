@@ -6,6 +6,7 @@ import { ASSISTANT_NAME, DATA_DIR, STORE_DIR } from './config.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import {
+  AgentMessage,
   NewMessage,
   RegisteredGroup,
   ScheduledTask,
@@ -84,6 +85,22 @@ function createSchema(database: Database.Database): void {
     );
   `);
 
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS agent_routing (
+      id TEXT PRIMARY KEY,
+      from_folder TEXT NOT NULL,
+      to_folder TEXT NOT NULL,
+      type TEXT NOT NULL,
+      content TEXT NOT NULL,
+      task_id TEXT,
+      priority TEXT DEFAULT 'normal',
+      artifacts TEXT,
+      status TEXT DEFAULT 'pending',
+      created_at TEXT NOT NULL,
+      processed_at TEXT
+    )
+  `);
+
   // Add context_mode column if it doesn't exist (migration for existing DBs)
   try {
     database.exec(
@@ -138,6 +155,25 @@ function createSchema(database: Database.Database): void {
     );
   } catch {
     /* columns already exist */
+  }
+
+  // Add agent hierarchy columns to registered_groups if they don't exist
+  try {
+    database.exec(`ALTER TABLE registered_groups ADD COLUMN role TEXT DEFAULT 'worker'`);
+  } catch {
+    /* column already exists */
+  }
+
+  try {
+    database.exec(`ALTER TABLE registered_groups ADD COLUMN parent_folder TEXT`);
+  } catch {
+    /* column already exists */
+  }
+
+  try {
+    database.exec(`ALTER TABLE registered_groups ADD COLUMN child_folders TEXT`);
+  } catch {
+    /* column already exists */
   }
 }
 
@@ -632,6 +668,69 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
     };
   }
   return result;
+}
+
+// --- Agent routing accessors ---
+
+export function saveAgentMessage(msg: AgentMessage): void {
+  db.prepare(
+    `INSERT INTO agent_routing (id, from_folder, to_folder, type, content, task_id, priority, artifacts, status, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
+  ).run(
+    msg.id,
+    msg.from,
+    msg.to,
+    msg.type,
+    msg.content,
+    msg.task_id ?? null,
+    msg.priority,
+    msg.artifacts ? JSON.stringify(msg.artifacts) : null,
+    msg.timestamp,
+  );
+}
+
+export function getPendingMessagesForAgent(folder: string): AgentMessage[] {
+  const rows = db
+    .prepare(
+      `SELECT * FROM agent_routing WHERE to_folder = ? AND status = 'pending' ORDER BY created_at`,
+    )
+    .all(folder) as Array<{
+    id: string;
+    from_folder: string;
+    to_folder: string;
+    type: AgentMessage['type'];
+    content: string;
+    task_id: string | null;
+    priority: AgentMessage['priority'];
+    artifacts: string | null;
+    created_at: string;
+  }>;
+
+  return rows.map((row) => ({
+    id: row.id,
+    from: row.from_folder,
+    to: row.to_folder,
+    type: row.type,
+    content: row.content,
+    task_id: row.task_id ?? undefined,
+    priority: row.priority,
+    artifacts: row.artifacts ? (JSON.parse(row.artifacts) as string[]) : undefined,
+    timestamp: row.created_at,
+  }));
+}
+
+export function markAgentMessageProcessed(id: string): void {
+  const now = new Date().toISOString();
+  db.prepare(
+    `UPDATE agent_routing SET status = 'processed', processed_at = ? WHERE id = ?`,
+  ).run(now, id);
+}
+
+export function getWorkersForOrchestrator(folder: string): string[] {
+  const rows = db
+    .prepare(`SELECT folder FROM registered_groups WHERE parent_folder = ?`)
+    .all(folder) as Array<{ folder: string }>;
+  return rows.map((r) => r.folder);
 }
 
 // --- JSON migration ---
